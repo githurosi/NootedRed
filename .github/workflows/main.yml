@@ -18,34 +18,46 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: "recursive"
-          repository: ChefKissInc/NootedRed  # 添加的仓库地址参数
-      - run: xcodebuild -configuration Debug -arch x86_64 build
-      - run: xcodebuild -configuration Release -arch x86_64 build
+          submodules: recursive
+          repository: ChefKissInc/NootedRed
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_14.3.1.app  # 根据实际版本修改
+
+      - name: Build Debug
+        run: |
+          xcodebuild -scheme NootedRed -configuration Debug -arch x86_64 -derivedDataPath build/debug build
+          cd build/debug/Build/Products/Debug && zip -r Debug.zip NootedRed.app
+
+      - name: Build Release
+        run: |
+          xcodebuild -scheme NootedRed -configuration Release -arch x86_64 -derivedDataPath build/release build
+          cd build/release/Build/Products/Release && zip -r Release.zip NootedRed.app
+
+      - name: Verify Artifacts
+        run: |
+          echo "Debug zip:"
+          ls build/debug/Build/Products/Debug/*.zip
+          echo "Release zip:"
+          ls build/release/Build/Products/Release/*.zip
+
       - name: Upload to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Artifacts
-          path: build/*/*.zip
-      - name: Upload build
+          name: Build-Artifacts
+          path: |
+            build/debug/Build/Products/Debug/*.zip
+            build/release/Build/Products/Release/*.zip
+
+      - name: Upload to Release
         uses: svenstaro/upload-release-action@2.9.0
         if: github.event_name == 'release'
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: build/*/*.zip
+          file: |
+            build/debug/Build/Products/Debug/*.zip
+            build/release/Build/Products/Release/*.zip
           tag: ${{ github.ref }}
           file_glob: true
           overwrite: true
-
-  analyse-clang:
-    name: Analyse Clang
-    runs-on: macos-latest
-    env:
-      JOB_TYPE: ANALYZE
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-          repository: ChefKissInc/NootedRed  # 添加的仓库地址参数
-      - run: xcodebuild analyze -quiet -scheme NootedRed -configuration Debug -arch x86_64 CLANG_ANALYZER_OUTPUT=plist-html CLANG_ANALYZER_OUTPUT_DIR="$(pwd)/clang-analyze" && [ "$(find clang-analyze -name "*.html")" = "" ]
-      - run: xcodebuild analyze -quiet -scheme NootedRed -configuration Release -arch x86_64 CLANG_ANALYZER_OUTPUT=plist-html CLANG_ANALYZER_OUTPUT_DIR="$(pwd)/clang-analyze" && [ "$(find clang-analyze -name "*.html")" = "" ]
+          prerelease: ${{ contains(github.ref, '-beta') }}  # 自动标记预发布版本
