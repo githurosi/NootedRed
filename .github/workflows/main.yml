@@ -2,13 +2,13 @@ name: Auto Update Worker
 on:
   push:
     branches:
-      - master  # 修改触发分支为 master
+      - master
   schedule:
-    - cron: "0 1 * * *" # 每天凌晨1点运行（UTC时间）
+    - cron: "0 1 * * *" # 每天UTC时间1点执行（北京时间9点）
   workflow_dispatch:
     inputs:
       force_update:
-        description: '是否强制更新（忽略版本检查）'
+        description: '强制更新（忽略版本检查）'
         required: false
         default: 'false'
 
@@ -19,61 +19,114 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
+      # 1. 基础环境准备
       - name: 检出当前仓库
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false  # 防止凭证残留
 
       - name: 设置环境变量
         run: |
           echo "REPO_OWNER=ChefKissInc" >> $GITHUB_ENV
           echo "REPO_NAME=NootedRed" >> $GITHUB_ENV
-          echo "TARGET_BRANCH=master" >> $GITHUB_ENV  # 明确指定 master 分支
+          echo "TARGET_BRANCH=master" >> $GITHUB_ENV
 
+      # 2. 远程仓库交互
       - name: 获取远程仓库最新信息
         run: |
           git remote add origin-remote https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}.git
           git fetch origin-remote --depth=1 ${{ env.TARGET_BRANCH }}
-          REMOTE_VERSION=$(git describe --tags --always origin-remote/${{ env.TARGET_BRANCH }} 2>/dev/null | sed 's/^v//')
-          REMOTE_COMMIT=$(git rev-parse origin-remote/${{ env.TARGET_BRANCH }})
-          echo "REMOTE_VERSION=$REMOTE_VERSION" >> $GITHUB_ENV
-          echo "REMOTE_COMMIT=$REMOTE_COMMIT" >> $GITHUB_ENV
+          echo "REMOTE_COMMIT=$(git rev-parse origin-remote/${{ env.TARGET_BRANCH }})" >> $GITHUB_ENV
 
+      # 3. 本地状态检查
       - name: 检查本地版本
         run: |
-          LOCAL_COMMIT=$(git rev-parse HEAD)
-          LOCAL_VERSION=$(cat version.txt 2>/dev/null || echo "0.0.0")
-          echo "LOCAL_VERSION=$LOCAL_VERSION" >> $GITHUB_ENV
-          echo "LOCAL_COMMIT=$LOCAL_COMMIT" >> $GITHUB_ENV
+          echo "LOCAL_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "LOCAL_VERSION=$(cat version.txt 2>/dev/null || echo '0.0.0')" >> $GITHUB_ENV
 
+      # 4. 更新决策
       - name: 判断是否需要更新
         run: |
-          FORCE_UPDATE=${{ github.event.inputs.force_update || 'false' }}
-          if [ "$FORCE_UPDATE" = "true" ] || [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
-            echo "需要更新（强制更新或远程有新提交）"
-            exit 0
+          FORCE_UPDATE=${{ github.event.inputs.force_update == 'true' }}
+          if [ "$FORCE_UPDATE" = true ] || [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+            echo "NEED_UPDATE=true" >> $GITHUB_ENV
           else
-            echo "已是最新版本，无需更新"
-            exit 1
+            echo "NEED_UPDATE=false" >> $GITHUB_ENV
           fi
-        id: need_update
 
+      # 5. 核心更新流程（条件执行）
       - name: 克隆或更新远程仓库
-        if: steps.need_update.outcome == 'success'
+        if: env.NEED_UPDATE == 'true'
         run: |
-          git clone --depth=1 https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}.git temp-repo
-          cd temp-repo
-          git checkout ${{ env.TARGET_BRANCH }}  # 确保检出 master 分支
-          cp -r ./* ../
-          cd ..
-          rm -rf temp-repo
-          CURRENT_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
-          echo "$CURRENT_VERSION" > version.txt
+          # 创建临时目录避免路径污染
+          mkdir temp-repo && cd temp-repo
+          git clone --depth=1 https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}.git .
+          git checkout ${{ env.TARGET_BRANCH }}
 
+      # 6. 路径规范化处理
+      - name: 路径规范化处理
+        if: env.NEED_UPDATE == 'true'
+        run: |
+          # 处理重复目录结构
+          find . -type d -name "NootedRed" -execdir mv {}/* . \; -execdir rmdir {} \;
+          # 处理嵌套头文件
+          find PrivateHeaders -type d -name "PrivateHeaders" -execdir mv {}/* . \; -execdir rmdir {} \;
+
+      # 7. 文件清理策略
+      - name: 清理非必要文件
+        if: env.NEED_UPDATE == 'true'
+        run: |
+          # 创建.gitignore规则
+          cat > .gitignore << EOF
+          /*
+          !*.cpp
+          !*.hpp
+          !*.md
+          !version.txt
+          !LICENSE
+          !README.md
+          EOF
+          # 执行清理
+          git clean -fdx
+
+      # 8. 提交前校验
+      - name: 提交前校验
+        if: env.NEED_UPDATE == 'true'
+        run: |
+          # 检查未跟踪文件
+          git status --porcelain | grep -q '^??' && { echo "存在未跟踪文件"; exit 1; }
+          # 检查未提交修改
+          git diff --exit-code --quiet || { echo "存在未提交修改"; exit 1; }
+
+      # 9. 执行提交
       - name: 提交更新
-        if: steps.need_update.outcome == 'success'
+        if: env.NEED_UPDATE == 'true'
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          commit_message: "🔄 自动更新仓库代码至 ${REMOTE_VERSION}"
+          commit_message: "🔄 自动更新至 ${{ env.REMOTE_VERSION }}"
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
-          branch: master  # 确保提交到 master 分支
+          branch: master
+          commit_options: '--no-verify'  # 跳过可能存在的本地钩子
+          file_pattern: '*.cpp *.hpp *.md version.txt'  # 明确提交范围
+
+      # 10. 健康检查
+      - name: 工作流健康检查
+        if: always()
+        run: |
+          echo "::group::系统状态报告"
+          echo "当前分支: $(git rev-parse --abbrev-ref HEAD)"
+          echo "最新提交: $(git log -1 --format=%h)"
+          echo "修改文件: $(git diff --name-only HEAD^ HEAD 2>/dev/null)"
+          echo "::endgroup::"
+
+      # 11. 恢复点创建
+      - name: 创建恢复点
+        run: git tag --force recovery-point-${{ github.run_number }}
+
+      # 12. 异常回滚
+      - name: 异常回滚
+        if: failure()
+        run: |
+          git reset --hard recovery-point-${{ github.run_number }}
+          git clean -fdx
