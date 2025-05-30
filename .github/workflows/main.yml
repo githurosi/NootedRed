@@ -1,63 +1,30 @@
-name: CI
+name: Clone Master Branch
 
 on:
+  workflow_dispatch:  # 允许手动触发
   push:
-  pull_request:
-  workflow_dispatch:
-  release:
-    types: [published]
+    branches:
+      - master  # 当 master 分支有推送时自动触发
 
 jobs:
-  build:
-    name: Build
-    runs-on: macos-latest
+  clone-repository:
+    name: Clone Master Branch
+    runs-on: ubuntu-latest  # 可选其他运行器（如 macos-latest）
     permissions:
-      contents: write
-    env:
-      JOB_TYPE: BUILD
+      contents: read  # 只需要读取权限
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Master Branch
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
-          repository: ChefKissInc/NootedRed
+          repository: ChefKissInc/NootedRed  # 指定仓库地址
+          ref: master                        # 明确指定克隆 master 分支
+          submodules: recursive              # 递归克隆所有子模块
+          fetch-depth: 0                     # 获取完整提交历史（可选）
 
-      - name: Select Xcode
-        run: sudo xcode-select -switch /Applications/Xcode_14.3.1.app  # 根据实际版本修改
-
-      - name: Build Debug
+      - name: Verify Cloned Content
         run: |
-          xcodebuild -scheme NootedRed -configuration Debug -arch x86_64 -derivedDataPath build/debug build
-          cd build/debug/Build/Products/Debug && zip -r Debug.zip NootedRed.app
-
-      - name: Build Release
-        run: |
-          xcodebuild -scheme NootedRed -configuration Release -arch x86_64 -derivedDataPath build/release build
-          cd build/release/Build/Products/Release && zip -r Release.zip NootedRed.app
-
-      - name: Verify Artifacts
-        run: |
-          echo "Debug zip:"
-          ls build/debug/Build/Products/Debug/*.zip
-          echo "Release zip:"
-          ls build/release/Build/Products/Release/*.zip
-
-      - name: Upload to Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Build-Artifacts
-          path: |
-            build/debug/Build/Products/Debug/*.zip
-            build/release/Build/Products/Release/*.zip
-
-      - name: Upload to Release
-        uses: svenstaro/upload-release-action@2.9.0
-        if: github.event_name == 'release'
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: |
-            build/debug/Build/Products/Debug/*.zip
-            build/release/Build/Products/Release/*.zip
-          tag: ${{ github.ref }}
-          file_glob: true
-          overwrite: true
-          prerelease: ${{ contains(github.ref, '-beta') }}  # 自动标记预发布版本
+          echo "Cloned repository contents:"
+          ls -la
+          echo "Submodule status:"
+          git submodule status
