@@ -1,30 +1,79 @@
-name: Clone Master Branch
-
+name: Auto Update Worker
 on:
-  workflow_dispatch:  # 允许手动触发
   push:
     branches:
-      - master  # 当 master 分支有推送时自动触发
+      - master  # 修改触发分支为 master
+  schedule:
+    - cron: "0 1 * * *" # 每天凌晨1点运行（UTC时间）
+  workflow_dispatch:
+    inputs:
+      force_update:
+        description: '是否强制更新（忽略版本检查）'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
 
 jobs:
-  clone-repository:
-    name: Clone Master Branch
-    runs-on: ubuntu-latest  # 可选其他运行器（如 macos-latest）
-    permissions:
-      contents: read  # 只需要读取权限
-
+  update:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout Master Branch
+      - name: 检出当前仓库
         uses: actions/checkout@v4
         with:
-          repository: ChefKissInc/NootedRed  # 指定仓库地址
-          ref: master                        # 明确指定克隆 master 分支
-          submodules: recursive              # 递归克隆所有子模块
-          fetch-depth: 0                     # 获取完整提交历史（可选）
+          fetch-depth: 0
 
-      - name: Verify Cloned Content
+      - name: 设置环境变量
         run: |
-          echo "Cloned repository contents:"
-          ls -la
-          echo "Submodule status:"
-          git submodule status
+          echo "REPO_OWNER=ChefKissInc" >> $GITHUB_ENV
+          echo "REPO_NAME=NootedRed" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=master" >> $GITHUB_ENV  # 明确指定 master 分支
+
+      - name: 获取远程仓库最新信息
+        run: |
+          git remote add origin-remote https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}.git
+          git fetch origin-remote --depth=1 ${{ env.TARGET_BRANCH }}
+          REMOTE_VERSION=$(git describe --tags --always origin-remote/${{ env.TARGET_BRANCH }} 2>/dev/null | sed 's/^v//')
+          REMOTE_COMMIT=$(git rev-parse origin-remote/${{ env.TARGET_BRANCH }})
+          echo "REMOTE_VERSION=$REMOTE_VERSION" >> $GITHUB_ENV
+          echo "REMOTE_COMMIT=$REMOTE_COMMIT" >> $GITHUB_ENV
+
+      - name: 检查本地版本
+        run: |
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          LOCAL_VERSION=$(cat version.txt 2>/dev/null || echo "0.0.0")
+          echo "LOCAL_VERSION=$LOCAL_VERSION" >> $GITHUB_ENV
+          echo "LOCAL_COMMIT=$LOCAL_COMMIT" >> $GITHUB_ENV
+
+      - name: 判断是否需要更新
+        run: |
+          FORCE_UPDATE=${{ github.event.inputs.force_update || 'false' }}
+          if [ "$FORCE_UPDATE" = "true" ] || [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+            echo "需要更新（强制更新或远程有新提交）"
+            exit 0
+          else
+            echo "已是最新版本，无需更新"
+            exit 1
+          fi
+        id: need_update
+
+      - name: 克隆或更新远程仓库
+        if: steps.need_update.outcome == 'success'
+        run: |
+          git clone --depth=1 https://github.com/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}.git temp-repo
+          cd temp-repo
+          git checkout ${{ env.TARGET_BRANCH }}  # 确保检出 master 分支
+          cp -r ./* ../
+          cd ..
+          rm -rf temp-repo
+          CURRENT_VERSION=$(git describe --tags --always 2>/dev/null | sed 's/^v//')
+          echo "$CURRENT_VERSION" > version.txt
+
+      - name: 提交更新
+        if: steps.need_update.outcome == 'success'
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "🔄 自动更新仓库代码至 ${REMOTE_VERSION}"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
+          branch: master  # 确保提交到 master 分支
